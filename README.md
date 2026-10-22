@@ -31,4 +31,4 @@ python3 scripts/import_companies.py \
 
 ## Current state
 
-This repository is a local Git repository. No remote has been configured. The existing `career-ops-hq/career-ops` repository was not modified.
+This project is connected to `https://github.com/michelevpc-collab/career-ops`. The existing `career-ops-hq/career-ops` repository was not modified.
