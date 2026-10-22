@@ -1,178 +1,102 @@
-const listNode = document.querySelector("#company-list");
-const detailNode = document.querySelector("#detail-pane");
-const searchNode = document.querySelector("#search");
-const countNode = document.querySelector("#result-count");
-const moreButton = document.querySelector("#load-more");
-const toastNode = document.querySelector("#toast");
+const listNode=document.querySelector("#company-list");
+const detailNode=document.querySelector("#detail-pane");
+const searchNode=document.querySelector("#search");
+const countNode=document.querySelector("#result-count");
+const moreButton=document.querySelector("#load-more");
+const toastNode=document.querySelector("#toast");
+const batchPanel=document.querySelector("#batch-panel");
+const importDialog=document.querySelector("#import-dialog");
+let selectedId=null, selectedRecord=null, offset=0, debounceTimer, activeBatch=null, batchPoll=null, importToken=null;
 
-let selectedId = null;
-let selectedRecord = null;
-let offset = 0;
-let lastQuery = "";
-let debounceTimer;
+function esc(value){return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);}
+function safeLink(value){const text=esc(value);return /^https?:\/\//i.test(String(value||""))?`<a href="${text}" target="_blank" rel="noopener noreferrer">${text}</a>`:text||'<span class="empty">Not recorded</span>';}
+async function api(path,options={}){const response=await fetch(path,{headers:{"Content-Type":"application/json",...(options.headers||{})},...options});const body=await response.json();if(!response.ok)throw new Error(body.error||`Request failed (${response.status})`);return body;}
+function notify(message){toastNode.textContent=message;toastNode.classList.add("show");clearTimeout(notify.timer);notify.timer=setTimeout(()=>toastNode.classList.remove("show"),3500);}
+function statusPill(status){const label=(status||"unknown").replaceAll("_"," ");return `<span class="status-pill ${esc(status||"queued")}">${esc(label)}</span>`;}
 
-function esc(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  })[char]);
+function companySummary(company){
+  const meta=[company.sector,company.hq_city,company.hq_country].filter(Boolean).join(" · ")||"No sector or location recorded";
+  const status=company.research_status?`<span class="mini-flag">${esc(company.research_status.replaceAll("_"," "))}</span>`:"";
+  const missing=company.has_missing_research_info?`<span class="mini-flag missing">${company.missing_fields.length} gaps</span>`:'<span class="mini-flag">Core fields present</span>';
+  return `<li class="company-item"><button class="company-button ${Number(company.id)===selectedId?"active":""}" data-company-id="${Number(company.id)}"><span class="company-name">${esc(company.name)}</span><span class="company-meta">${esc(meta)}</span><span class="mini-flags">${missing}${status}</span></button></li>`;
 }
-
-function safeLink(value) {
-  const text = esc(value);
-  if (/^https?:\/\//i.test(String(value || ""))) {
-    return `<a href="${text}" target="_blank" rel="noopener noreferrer">${text}</a>`;
-  }
-  return text || '<span class="empty">Not recorded</span>';
+async function loadCompanies({append=false}={}){
+  const query=searchNode.value.trim();if(!append){offset=0;listNode.innerHTML="";countNode.textContent="Searching…";}
+  const data=await api(`/api/companies?q=${encodeURIComponent(query)}&limit=80&offset=${offset}`);
+  listNode.insertAdjacentHTML("beforeend",data.companies.map(companySummary).join(""));offset+=data.companies.length;
+  countNode.textContent=`${offset} of ${data.total} companies${query?" matching":""}`;moreButton.hidden=offset>=data.total;
 }
-
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
-  return body;
+function fieldState(company,key){return company.field_states?.[key]?.state||"unknown";}
+function renderEvidence(company){
+  const rows=company.research_evidence||[];
+  if(!rows.length)return '<p class="research-note">No field-level research evidence yet. A missing field stays unknown until a source supports a value.</p>';
+  return `<div class="evidence-list">${rows.map(e=>`<article class="evidence-item"><div><strong>${esc(e.field_name.replaceAll("_"," "))}</strong> ${statusPill(e.verification_status)} <span class="confidence">${Math.round(Number(e.confidence)*100)}% confidence</span></div><p>${esc(e.field_value)}</p><small>${safeLink(e.source_url)} · checked ${esc(e.retrieved_at)}${e.excerpt?`<br>${esc(e.excerpt)}`:""}</small></article>`).join("")}</div>`;
 }
-
-function notify(message) {
-  toastNode.textContent = message;
-  toastNode.classList.add("show");
-  clearTimeout(notify.timer);
-  notify.timer = setTimeout(() => toastNode.classList.remove("show"), 2600);
+function renderResearchRuns(company){
+  const runs=company.research_runs||[];const checks=company.source_checks||[];
+  const states=Object.entries(company.field_states||{});
+  return `<div class="research-status-grid">${states.map(([field,item])=>`<span>${esc(field.replaceAll("_"," "))}: ${statusPill(item.state)}</span>`).join("")}</div>
+    ${runs.length?`<ul class="source-list">${runs.map(r=>`<li>${statusPill(r.status)} ${esc(r.run_type)} · ${esc(r.retrieved_at)}${r.message?` · ${esc(r.message)}`:""}</li>`).join("")}</ul>`:""}
+    ${checks.length?`<h4 class="section-title">Checked sources</h4><ul class="source-list">${checks.map(s=>`<li>${statusPill(s.retrieval_status)} ${safeLink(s.url)} · ${esc(s.retrieved_at)}</li>`).join("")}</ul>`:""}`;
 }
-
-function companySummary(company) {
-  const meta = [company.sector, company.hq_city, company.hq_country].filter(Boolean).join(" · ") || "No sector or location recorded";
-  const status = company.research_status
-    ? `<span class="mini-flag">${esc(company.research_status.replaceAll("_", " "))}</span>`
-    : "";
-  const missing = company.has_missing_research_info
-    ? `<span class="mini-flag missing">${company.missing_fields.length} gaps</span>`
-    : '<span class="mini-flag">Core fields present</span>';
-  return `<li class="company-item"><button class="company-button ${Number(company.id) === selectedId ? "active" : ""}" data-company-id="${Number(company.id)}">
-    <span class="company-name">${esc(company.name)}</span><span class="company-meta">${esc(meta)}</span><span class="mini-flags">${missing}${status}</span>
-  </button></li>`;
+function renderContacts(company){const rows=company.contacts||[];if(!rows.length)return '<p class="research-note">No contact records imported or discovered.</p>';return `<div class="record-list">${rows.map(c=>`<article class="record-item"><strong>${esc(c.name||"Unnamed contact")}</strong> ${statusPill(c.verification_status)}<div>${esc(c.title||"")}</div><div>${c.email?`<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>`:""} ${c.linkedin_url?safeLink(c.linkedin_url):""}</div><small>Source: ${safeLink(c.source_url||"")}${c.source_sheet?` · ${esc(c.source_sheet)}`:""} · ${Math.round(Number(c.confidence||0)*100)}% confidence</small>${c.source_data_json?`<details><summary>Original workbook contact fields</summary><pre class="source-json">${esc(JSON.stringify(JSON.parse(c.source_data_json),null,2))}</pre></details>`:""}</article>`).join("")}</div>`;}
+function renderJobs(company){const rows=company.jobs||[];if(!rows.length)return '<p class="research-note">No matching vacancies recorded yet. Job discovery checks available official careers pages and supported public ATS listings.</p>';return `<div class="record-list">${rows.map(j=>`<article class="record-item"><strong>${safeLink(j.canonical_url)}</strong><p>${esc(j.title)} ${statusPill(j.current_status)}</p><small>${esc(j.location||"Location not listed")} · ${esc(j.source)} · found ${esc(j.discovered_at)}${j.posted_at?` · posted ${esc(j.posted_at)}`:""}</small><details><summary>Description</summary><p>${esc(j.description||"No description returned by source.")}</p></details></article>`).join("")}</div>`;}
+function renderJobChecks(company){const runs=company.job_discovery_runs||[];if(!runs.length)return "";return `<h4 class="section-title">Job search history</h4><div class="record-list">${runs.map(r=>{let sources=[],limitations=[];try{sources=JSON.parse(r.sources_json||"[]");limitations=JSON.parse(r.limitations_json||"[]");}catch{}return `<article class="record-item">${statusPill(r.status)} · ${Number(r.jobs_found)} matching roles · ${esc(r.retrieved_at)}<div>Sources: ${sources.map(safeLink).join(" · ")||"None"}</div>${limitations.length?`<small>Limits: ${esc(limitations.join("; "))}</small>`:""}</article>`;}).join("")}</div>`;}
+function renderApplications(company){const rows=company.applications||[];return rows.length?`<div class="record-list">${rows.map(a=>`<article class="record-item"><strong>${esc(a.role_title||"Role not recorded")}</strong> ${statusPill(a.status||"unknown")}<p>${esc(a.next_action||"")}</p><small>${esc(a.cv_version||"")}${a.follow_up_at?` · follow-up ${esc(a.follow_up_at)}`:""} · ${esc(a.source_sheet||"")}</small>${a.source_data_json?`<details><summary>Original application fields</summary><pre class="source-json">${esc(JSON.stringify(JSON.parse(a.source_data_json),null,2))}</pre></details>`:""}</article>`).join("")}</div>`:'<p class="research-note">No application records imported.</p>';}
+function renderOutreach(company){const rows=company.outreach_history||[];return rows.length?`<div class="record-list">${rows.map(o=>`<details class="record-item"><summary><strong>${esc(o.subject||"Message without subject")}</strong> · ${esc(o.sent_at||"date not recorded")} · ${esc(o.contact_email||"")}</summary><p>${esc(o.classification||"")}</p><p>${esc(o.response_status||"")}</p><p class="message-body">${esc(o.message_text||"No message body available in source workbook.")}</p><small>${esc(o.source_sheet||"")}${o.next_action?` · Next: ${esc(o.next_action)}`:""}</small>${o.source_data_json?`<details><summary>Original message fields</summary><pre class="source-json">${esc(JSON.stringify(JSON.parse(o.source_data_json),null,2))}</pre></details>`:""}</details>`).join("")}</div>`:'<p class="research-note">No outreach history imported.</p>';}
+function manualResearchEditor(company){
+  const record=selectedRecord;const editable=Boolean(record);const sources=editable?(record.sources||[]).map(s=>s.url).join("\n"):"";
+  return `<section class="research-card"><div class="detail-head"><div><h3>Research notes</h3><p class="research-note">${editable?`Record #${record.id} · ${esc(record.updated_at)}`:"Optional notes kept alongside automated evidence."}</p></div><button id="start-research" class="secondary">${editable?"Resume notes":"Add research note"}</button></div>
+    ${editable?`<form id="research-form"><div class="form-field"><label for="findings">Notes</label><textarea id="findings">${esc(record.findings||"")}</textarea></div><div class="form-row"><div class="form-field"><label for="source-urls">Source URLs</label><textarea id="source-urls">${esc(sources)}</textarea></div><div class="form-field"><label for="status">Note status</label><select id="status">${["in_progress","needs_review","researched","queued"].map(s=>`<option value="${s}" ${record.status===s?"selected":""}>${s.replaceAll("_"," ")}</option>`).join("")}</select></div></div><label class="check-row"><input id="verified" type="checkbox" ${record.verified_at?"checked":""}><span>Store a user-declared verification timestamp for this note. This does not validate a source.</span></label><div class="buttons"><button class="primary" type="submit">Save note</button></div><p id="form-error" class="inline-error" hidden></p></form>`:""}</section>`;
 }
-
-async function loadCompanies({ append = false } = {}) {
-  const query = searchNode.value.trim();
-  if (!append) {
-    offset = 0;
-    lastQuery = query;
-    listNode.innerHTML = "";
-    countNode.textContent = "Searching…";
-  }
-  const data = await api(`/api/companies?q=${encodeURIComponent(query)}&limit=80&offset=${offset}`);
-  listNode.insertAdjacentHTML("beforeend", data.companies.map(companySummary).join(""));
-  offset += data.companies.length;
-  countNode.textContent = append ? `${offset} loaded` : `${data.companies.length}${data.companies.length === 80 ? "+" : ""} results`;
-  moreButton.hidden = data.companies.length < 80;
+function renderCompany(company){
+  selectedId=Number(company.id);selectedRecord=company.research_records?.[0]||null;
+  const fields=[["Sector",company.sector,"sector"],["Categories",company.categories,"categories"],["HQ city",company.hq_city,"hq_city"],["Region / state",company.hq_region,"hq_region"],["Country",company.hq_country,"hq_country"],["Website",company.website,"website",true],["Careers page",company.careers_url,"careers_url",true],["Company LinkedIn",company.company_linkedin_url,"company_linkedin_url",true],["Company size",company.employee_count,"employee_count"],["Size band",company.size_band,"size_band"],["Stage",company.stage,"stage"],["Other locations",company.operating_locations,"operating_locations"],["Priority",company.priority],["Fit score",company.fit_score],["CV version",company.cv_version],["Next action",company.next_action],["Follow-up",company.follow_up_date],["Outreach status",company.outreach_status],["Application status",company.application_status],["Primary email domain",company.primary_email_domain],["Email count in archive",company.email_count_in_archive],["First / latest outreach",[company.first_email_date,company.latest_email_date].filter(Boolean).join(" → ")],["Last outgoing subject",company.last_outgoing_subject],["Reply evidence",company.reply_evidence],["Notes",company.notes],["Source URL",company.source_url,null,true]];
+  const missing=company.missing_fields?.length?`<div class="missing-box"><strong>${company.missing_fields.length} tracked fields missing</strong><p>${company.missing_fields.map(esc).join(" · ")}</p></div>`:'<div class="complete-box">All currently tracked profile fields are populated.</div>';
+  const provenance=company.sources?.length?`<ul class="source-list">${company.sources.slice(0,12).map(s=>`<li>${esc(s.worksheet)} · row ${Number(s.worksheet_row)}${s.source_url?` · ${safeLink(s.source_url)}`:""}</li>`).join("")}</ul>`:'<p class="research-note">No workbook source rows recorded.</p>';
+  detailNode.innerHTML=`<div class="detail-head"><div><h2>${esc(company.name)}</h2><p class="detail-subtitle">${esc([company.sector,company.hq_city,company.hq_country].filter(Boolean).join(" · ")||"Company from imported master")}</p></div>${statusPill(company.research_status||"not researched")}</div>
+    <div class="company-actions"><button id="enrich-company" class="primary">Research &amp; Enrich Company</button><button id="discover-company-jobs" class="secondary">Discover Jobs</button></div>
+    <h3 class="section-title">Company profile</h3>${missing}<dl class="field-grid">${fields.map(([label,value,key,link])=>{const state=key?fieldState(company,key):"";return `<div class="field"><dt>${esc(label)} ${state?`<span class="field-state ${esc(state)}">${esc(state.replaceAll("_"," "))}</span>`:""}</dt><dd class="${value?"":"empty"}">${value?(link?safeLink(value):esc(value)):"Not recorded"}</dd></div>`;}).join("")}</dl>
+    <h3 class="section-title">Research evidence &amp; checks</h3>${renderEvidence(company)}${renderResearchRuns(company)}
+    <h3 class="section-title">Public contacts</h3>${renderContacts(company)}
+    <h3 class="section-title">Matching job openings</h3>${renderJobs(company)}${renderJobChecks(company)}
+    <h3 class="section-title">Applications</h3>${renderApplications(company)}
+    <h3 class="section-title">Outreach history</h3>${renderOutreach(company)}
+    <h3 class="section-title">Workbook provenance</h3>${provenance}${manualResearchEditor(company)}`;
+  listNode.querySelectorAll(".company-button").forEach(b=>b.classList.toggle("active",Number(b.dataset.companyId)===selectedId));
+  document.querySelector("#enrich-company")?.addEventListener("click",()=>startCompanyBatch("research"));
+  document.querySelector("#discover-company-jobs")?.addEventListener("click",()=>startCompanyBatch("jobs"));
+  document.querySelector("#start-research")?.addEventListener("click",beginResearch);
+  document.querySelector("#research-form")?.addEventListener("submit",saveResearch);
 }
+async function selectCompany(id){try{const data=await api(`/api/companies/${id}`);renderCompany(data.company);}catch(error){notify(error.message);}}
+async function beginResearch(){try{const result=await api("/api/research/start",{method:"POST",body:JSON.stringify({company_id:selectedId})});selectedRecord=result.record;await selectCompany(selectedId);}catch(error){notify(error.message);}}
+async function saveResearch(event){event.preventDefault();const errorNode=document.querySelector("#form-error");errorNode.hidden=true;try{await api("/api/research",{method:"POST",body:JSON.stringify({company_id:selectedId,record_id:selectedRecord?.id,findings:document.querySelector("#findings").value,source_urls:document.querySelector("#source-urls").value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean),status:document.querySelector("#status").value,verified:document.querySelector("#verified").checked})});notify("Research note saved.");await selectCompany(selectedId);}catch(error){errorNode.textContent=error.message;errorNode.hidden=false;}}
 
-function statusPill(status) {
-  return `<span class="status-pill ${esc(status || "queued")}">${esc((status || "queued").replaceAll("_", " "))}</span>`;
-}
+async function loadBatch(id){try{const data=await api(`/api/batches/${id}`);if(data.batch)renderBatch(data.batch);}catch(error){console.warn("batch status unavailable",error);}}
+function renderBatch(batch){activeBatch=batch.id;batchPanel.hidden=false;const done=Number(batch.completed||0)+Number(batch.failed||0)+Number(batch.skipped||0);const pct=batch.total?Math.round(done*100/batch.total):0;document.querySelector("#batch-summary").textContent=`${batch.job_type==="jobs"?"Job discovery":"Company research"} · ${esc(batch.status)}`;document.querySelector("#batch-message").textContent=batch.current_company?`Current: ${batch.current_company}`:(batch.message||"");document.querySelector("#batch-progress").value=pct;document.querySelector("#batch-counts").textContent=`Total ${batch.total} · completed ${batch.completed} · running ${batch.status==="running"&&batch.remaining?1:0} · failed ${batch.failed} · skipped ${batch.skipped} · remaining ${batch.remaining}`;document.querySelector("#batch-pause").hidden=batch.status!=="running";document.querySelector("#batch-resume").hidden=batch.status!=="paused";document.querySelector("#batch-retry").hidden=Number(batch.failed||0)===0;if(["completed","failed"].includes(batch.status)){clearInterval(batchPoll);batchPoll=null;if(selectedId)selectCompany(selectedId);loadCompanies().catch(()=>{});} }
+function beginBatchPolling(id){activeBatch=id;clearInterval(batchPoll);loadBatch(id);batchPoll=setInterval(()=>loadBatch(id),1500);}
+async function startCompanyBatch(jobType){try{const data=await api(jobType==="jobs"?"/api/jobs/discover":"/api/research/enrich",{method:"POST",body:JSON.stringify({company_id:selectedId})});beginBatchPolling(data.batch.id);notify("Research job started. Progress will update here.");}catch(error){notify(error.message);}}
+async function startAll(jobType){try{const data=await api("/api/batches",{method:"POST",body:JSON.stringify({job_type:jobType})});beginBatchPolling(data.batch.id);notify(`${jobType==="jobs"?"Job discovery":"Company enrichment"} batch started for the full company database.`);}catch(error){notify(error.message);}}
+async function batchAction(action){if(!activeBatch)return;try{const data=await api(`/api/batches/${activeBatch}/${action}`,{method:"POST",body:JSON.stringify({})});renderBatch(data.batch);}catch(error){notify(error.message);}}
 
-function researchEditor(company) {
-  const record = selectedRecord;
-  const editable = Boolean(record);
-  const sources = editable ? (record.sources || []).map((source) => source.url).join("\n") : "";
-  return `<section class="research-card">
-    <div class="detail-head"><div><h3>Research record</h3><p class="research-note">${editable ? `Record #${record.id} · updated ${esc(record.updated_at)}` : "Select this company to create a research record."} ${editable ? statusPill(record.status) : ""}</p></div>
-      <button id="start-research" class="secondary">${editable ? "Resume research" : "Select for research"}</button></div>
-    <p class="research-note">Manual workspace only: no live web research or AI fact-finding runs here. Add findings and source links yourself; nothing is inferred from missing fields.</p>
-    ${editable ? `<form id="research-form">
-      <div class="form-field"><label for="findings">Findings</label><textarea id="findings" name="findings" placeholder="Record sourced findings. Keep uncertain claims clearly marked.">${esc(record.findings || "")}</textarea></div>
-      <div class="form-row">
-        <div class="form-field"><label for="source-urls">Source URLs (one per line)</label><textarea id="source-urls" name="source_urls" placeholder="https://…">${esc(sources)}</textarea></div>
-        <div class="form-field"><label for="status">Research status</label><select id="status" name="status">
-          ${["in_progress", "needs_review", "researched", "queued"].map((status) => `<option value="${status}" ${record.status === status ? "selected" : ""}>${status.replaceAll("_", " ")}</option>`).join("")}
-        </select><p class="research-note">Status is a workflow state, not an accuracy guarantee.</p></div>
-      </div>
-      <label class="check-row"><input id="verified" type="checkbox" ${record.verified_at ? "checked" : ""}><span>Mark this record verified against its cited sources. This stores the current timestamp; the app does not validate source contents.</span></label>
-      <div class="buttons"><button class="primary" type="submit">Save research</button><span class="research-note">${record.verified_at ? `Last verified ${esc(record.verified_at)}` : "Not verified"}</span></div>
-      <p id="form-error" class="inline-error" hidden></p>
-      ${record.sources?.length ? `<h4 class="section-title">Saved source links</h4><ul class="source-list">${record.sources.map((source) => `<li>${safeLink(source.url)}${source.verified_at ? ` <small>· verified ${esc(source.verified_at)}</small>` : ""}</li>`).join("")}</ul>` : ""}
-    </form>` : ""}
-  </section>`;
-}
+function bytesToBase64(buffer){let binary="";const bytes=new Uint8Array(buffer);for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));return btoa(binary);}
+function renderImportPreview(preview){const node=document.querySelector("#import-preview");const sheets=preview.sheets||[];const proposals=preview.company_match_preview||[];node.innerHTML=`<div class="preview-summary"><strong>${preview.candidate_company_rows} company rows · ${preview.unique_source_company_names||0} unique names</strong><span>${preview.existing_company_matches||0} existing matches · ${preview.new_company_proposals||0} proposed new companies · ${preview.ambiguous_company_matches||0} ambiguous · ${preview.inferred_company_rows||0} domain-clue rows held for review · ${preview.candidate_contact_rows} contact rows · ${preview.candidate_outreach_rows} outreach/history rows · ${preview.duplicate_name_rows} duplicate-name rows</span><small>Review these proposed counts. Ambiguous matches remain for review. Source values stay on this machine.</small></div>${proposals.length?`<details class="preview-matches"><summary>Review up to ${proposals.length} proposed or ambiguous company matches</summary><ul>${proposals.map(p=>`<li><strong>${esc(p.name)}</strong> · ${esc(p.kind.replaceAll("_"," "))}${p.candidates?.length?` · possible matches: ${p.candidates.map(esc).join(", ")}`:""}</li>`).join("")}</ul></details>`:""}<div class="table-scroll"><table><thead><tr><th>Worksheet</th><th>Rows</th><th>Company rows</th><th>Contact rows</th><th>Outreach rows</th><th>Detected columns</th></tr></thead><tbody>${sheets.map(s=>`<tr><td>${esc(s.name)}</td><td>${Number(s.data_rows||0)}</td><td>${Number(s.company_rows||0)}</td><td>${Number(s.contact_rows||0)}</td><td>${Number(s.outreach_rows||0)}</td><td>${esc((s.columns||[]).join(", "))}</td></tr>`).join("")}</tbody></table></div>`;node.hidden=false;}
+function renderUnmatchedPage(data,append=false){const node=document.querySelector("#import-unmatched");if(!append)node.innerHTML=`<details open><summary>${Number(data.total)} unmatched or ambiguous source rows for review</summary><div class="unmatched-items"></div><button id="load-unmatched" class="secondary" type="button">Load next rows</button></details>`;const target=node.querySelector(".unmatched-items");target.insertAdjacentHTML("beforeend",(data.unmatched||[]).map(r=>`<article class="record-item"><strong>${esc(r.name||r.kind.replaceAll("_"," "))}</strong> · ${esc(r.sheet)} row ${Number(r.row)}${r.candidates?.length?`<div>Possible company matches: ${r.candidates.map(c=>esc(c.name)).join(", ")}</div>`:""}${Object.keys(r.review_values||{}).length?`<small>${Object.entries(r.review_values).map(([k,v])=>`${esc(k)}: ${esc(v)}`).join(" · ")}</small>`:""}</article>`).join(""));node.hidden=false;const button=node.querySelector("#load-unmatched");button.hidden=data.offset+data.unmatched.length>=data.total;button.dataset.importId=data.import_id;button.dataset.offset=String(data.offset+data.unmatched.length);}
+async function previewImport(){const file=document.querySelector("#workbook-file").files[0];const error=document.querySelector("#import-error");error.hidden=true;if(!file){error.textContent="Choose an .xlsx workbook first.";error.hidden=false;return;}try{document.querySelector("#preview-import").disabled=true;document.querySelector("#preview-import").textContent="Reading workbook…";const b64=bytesToBase64(await file.arrayBuffer());const result=await api("/api/import/preview",{method:"POST",body:JSON.stringify({filename:file.name,workbook_base64:b64})});importToken=result.token;renderImportPreview(result.preview);document.querySelector("#commit-import").disabled=false;document.querySelector("#import-note").textContent="Review these worksheet counts and columns. Import makes a backup before writing.";}catch(e){error.textContent=e.message;error.hidden=false;}finally{document.querySelector("#preview-import").disabled=false;document.querySelector("#preview-import").textContent="Preview workbook";}}
+async function commitImport(){if(!importToken)return;const error=document.querySelector("#import-error");error.hidden=true;try{document.querySelector("#commit-import").disabled=true;const data=await api("/api/import/commit",{method:"POST",body:JSON.stringify({token:importToken})});const r=data.report;importToken=null;document.querySelector("#import-note").textContent=r.already_imported?"This exact workbook has already been imported. No rows were added again.":`Imported ${r.companies_inserted} new companies; filled ${r.companies_updated} existing profiles; contacts/upserts ${r.contacts_imported}; outreach/history ${r.outreach_records_imported}; applications ${r.applications_imported}; unmatched ${r.unmatched_rows} (${r.ambiguous_rows} ambiguous); duplicates skipped ${r.duplicates_skipped}. ${data.backup}`;document.querySelector("#commit-import").textContent="Import complete";if(r.import_id&&r.unmatched_rows){const unmatched=await api(`/api/import/unmatched?import_id=${r.import_id}`);renderUnmatchedPage(unmatched);}notify(r.already_imported?"Workbook already imported.":"Workbook data imported locally.");await loadCompanies();if(selectedId)await selectCompany(selectedId);}catch(e){error.textContent=e.message;error.hidden=false;document.querySelector("#commit-import").disabled=false;}}
 
-function renderCompany(company) {
-  selectedId = Number(company.id);
-  selectedRecord = company.research_records?.[0] || null;
-  const fields = [
-    ["Sector", company.sector], ["Other categories", company.categories],
-    ["Headquarters city", company.hq_city], ["Region / state", company.hq_region],
-    ["Country", company.hq_country], ["Website", company.website, true],
-    ["Careers URL", company.careers_url, true], ["Company LinkedIn", company.company_linkedin_url, true],
-    ["Company size", company.employee_count], ["Size band", company.size_band],
-    ["Company stage", company.stage], ["Other locations", company.operating_locations],
-    ["Verification status", company.verification_status], ["Confidence", company.confidence],
-    ["Source URL", company.source_url, true],
-  ];
-  const missing = company.missing_fields?.length
-    ? `<div class="missing-box"><strong>${company.missing_fields.length} research fields missing</strong><p>${company.missing_fields.map(esc).join(" · ")}</p></div>`
-    : '<div class="complete-box">All tracked research fields are populated.</div>';
-  const provenance = company.sources?.length ? `<ul class="source-list">${company.sources.slice(0, 6).map((source) => `<li>${esc(source.worksheet)} · row ${Number(source.worksheet_row)}${source.source_url ? ` · ${safeLink(source.source_url)}` : ""}</li>`).join("")}</ul>` : '<p class="research-note">No workbook source rows recorded.</p>';
-  detailNode.innerHTML = `<div class="detail-head"><div><h2>${esc(company.name)}</h2><p class="detail-subtitle">${esc([company.sector, company.hq_city, company.hq_country].filter(Boolean).join(" · ") || "Company profile from imported master")}</p></div><div>${statusPill(company.research_status)}</div></div>
-    <h3 class="section-title">Available company information</h3>${missing}
-    <dl class="field-grid">${fields.map(([label, value, link]) => `<div class="field"><dt>${esc(label)}</dt><dd class="${value ? "" : "empty"}">${value ? (link ? safeLink(value) : esc(value)) : "Not recorded"}</dd></div>`).join("")}</dl>
-    <h3 class="section-title">Workbook provenance</h3>${provenance}
-    ${researchEditor(company)}`;
-  listNode.querySelectorAll(".company-button").forEach((button) => {
-    button.classList.toggle("active", Number(button.dataset.companyId) === selectedId);
-  });
-  document.querySelector("#start-research")?.addEventListener("click", beginResearch);
-  document.querySelector("#research-form")?.addEventListener("submit", saveResearch);
-}
-
-async function selectCompany(id) {
-  try {
-    const data = await api(`/api/companies/${id}`);
-    renderCompany(data.company);
-  } catch (error) { notify(error.message); }
-}
-
-async function beginResearch() {
-  try {
-    const result = await api("/api/research/start", { method: "POST", body: JSON.stringify({ company_id: selectedId }) });
-    notify("Research record opened. Add sourced findings when ready.");
-    await selectCompany(selectedId);
-  } catch (error) { notify(error.message); }
-}
-
-async function saveResearch(event) {
-  event.preventDefault();
-  const errorNode = document.querySelector("#form-error");
-  errorNode.hidden = true;
-  const payload = {
-    company_id: selectedId,
-    record_id: selectedRecord?.id,
-    findings: document.querySelector("#findings").value,
-    source_urls: document.querySelector("#source-urls").value.split(/\r?\n/).map((url) => url.trim()).filter(Boolean),
-    status: document.querySelector("#status").value,
-    verified: document.querySelector("#verified").checked,
-  };
-  try {
-    await api("/api/research", { method: "POST", body: JSON.stringify(payload) });
-    notify("Research record saved.");
-    await selectCompany(selectedId);
-    await loadCompanies();
-  } catch (error) {
-    errorNode.textContent = error.message;
-    errorNode.hidden = false;
-  }
-}
-
-listNode.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-company-id]");
-  if (button) selectCompany(Number(button.dataset.companyId));
-});
-searchNode.addEventListener("input", () => {
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => loadCompanies().catch((error) => { countNode.textContent = error.message; }), 180);
-});
-moreButton.addEventListener("click", () => loadCompanies({ append: true }).catch((error) => notify(error.message)));
-
-loadCompanies().catch((error) => { countNode.textContent = `Could not load companies: ${error.message}`; });
+listNode.addEventListener("click",e=>{const button=e.target.closest("[data-company-id]");if(button)selectCompany(Number(button.dataset.companyId));});
+searchNode.addEventListener("input",()=>{clearTimeout(debounceTimer);debounceTimer=setTimeout(()=>loadCompanies().catch(e=>countNode.textContent=e.message),180);});
+moreButton.addEventListener("click",()=>loadCompanies({append:true}).catch(e=>notify(e.message)));
+document.querySelector("#enrich-all").addEventListener("click",()=>startAll("research"));
+document.querySelector("#discover-all").addEventListener("click",()=>startAll("jobs"));
+document.querySelector("#batch-pause").addEventListener("click",()=>batchAction("pause"));
+document.querySelector("#batch-resume").addEventListener("click",()=>batchAction("resume"));
+document.querySelector("#batch-retry").addEventListener("click",()=>batchAction("retry"));
+document.querySelector("#open-import").addEventListener("click",()=>importDialog.showModal());
+document.querySelector("#preview-import").addEventListener("click",previewImport);
+document.querySelector("#commit-import").addEventListener("click",commitImport);
+document.querySelector("#import-unmatched").addEventListener("click",async e=>{const button=e.target.closest("#load-unmatched");if(!button)return;try{button.disabled=true;const page=await api(`/api/import/unmatched?import_id=${button.dataset.importId}&offset=${button.dataset.offset}`);renderUnmatchedPage(page,true);}catch(error){notify(error.message);}finally{button.disabled=false;}});
+loadCompanies().catch(e=>{countNode.textContent=`Could not load companies: ${e.message}`;});
+api("/api/stats").then(s=>{if(s.batch&&["running","paused"].includes(s.batch.status))beginBatchPolling(s.batch.id);}).catch(()=>{});

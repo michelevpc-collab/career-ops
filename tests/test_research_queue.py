@@ -16,7 +16,8 @@ class ResearchQueueTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "test.db"
-        with sqlite3.connect(self.db_path) as db:
+        db=sqlite3.connect(self.db_path)
+        try:
             db.executescript("""
                 CREATE TABLE companies (
                     id INTEGER PRIMARY KEY,
@@ -51,18 +52,21 @@ class ResearchQueueTests(unittest.TestCase):
                 INSERT INTO company_sources (company_id, worksheet, worksheet_row, source_name)
                 VALUES (1, 'Company Master', 2, 'Northstar Systems');
             """)
+        finally: db.close()
         initialize_research_schema(self.db_path)
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
     def test_database_access_adds_schema_and_preserves_existing_rows(self):
-        with sqlite3.connect(self.db_path) as db:
+        db=sqlite3.connect(self.db_path)
+        try:
             self.assertEqual(db.execute("SELECT count(*) FROM companies").fetchone()[0], 1)
             self.assertEqual(db.execute("SELECT count(*) FROM company_sources").fetchone()[0], 1)
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("research_records", tables)
             self.assertIn("research_sources", tables)
+        finally: db.close()
         company = get_company(self.db_path, 1)
         self.assertEqual(company["name"], "Northstar Systems")
         self.assertEqual(company["sources"][0]["worksheet"], "Company Master")
@@ -96,8 +100,10 @@ class ResearchQueueTests(unittest.TestCase):
     def test_invalid_source_url_is_rejected_without_saving(self):
         with self.assertRaises(ValueError):
             save_research(self.db_path, 1, "Unverified note", ["javascript:alert(1)"])
-        with sqlite3.connect(self.db_path) as db:
+        db=sqlite3.connect(self.db_path)
+        try:
             self.assertEqual(db.execute("SELECT count(*) FROM research_records").fetchone()[0], 0)
+        finally: db.close()
 
 
 if __name__ == "__main__":

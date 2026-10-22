@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 .env
 .venv/
+data/*.local.db
+data/*.backup
+data/*.bak
+data/*.pre-*.bak

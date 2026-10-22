@@ -10,12 +10,23 @@
 <body>
   <header class="topbar">
     <div>
-      <p class="eyebrow">CAREER-OPS · FIRST WORKING FEATURE</p>
-      <h1>Company research queue</h1>
-      <p class="subhead">Browse the master list, select a company, and record source-backed research.</p>
+      <p class="eyebrow">CAREER-OPS · RESEARCH WORKSPACE</p>
+      <h1>Career research &amp; outreach</h1>
+      <p class="subhead">Source-backed company research, public vacancies and imported outreach history.</p>
     </div>
-    <span class="local-badge">Local database</span>
+    <div class="global-actions">
+      <span class="local-badge">Private local database</span>
+      <button id="enrich-all" class="primary">Enrich All Companies</button>
+      <button id="discover-all" class="secondary">Discover Jobs</button>
+      <button id="open-import" class="secondary">Import Company Master Workbook</button>
+    </div>
   </header>
+
+  <section class="batch-panel" id="batch-panel" hidden aria-live="polite">
+    <div class="batch-title"><strong id="batch-summary">No batch running</strong><span id="batch-message"></span></div>
+    <progress id="batch-progress" max="100" value="0"></progress>
+    <div class="batch-stats"><span id="batch-counts"></span><div class="buttons"><button id="batch-pause" class="secondary">Pause</button><button id="batch-resume" class="secondary" hidden>Resume</button><button id="batch-retry" class="secondary">Retry failed</button></div></div>
+  </section>
 
   <main class="layout">
     <section class="company-pane" aria-label="Company browser">
@@ -34,6 +45,17 @@
       </div>
     </section>
   </main>
+  <dialog id="import-dialog">
+    <form method="dialog" class="dialog-head"><div><h2>Import company workbook</h2><p>Preview detected tabs and proposed record counts before any database changes.</p></div><button class="icon-button" value="cancel" aria-label="Close">×</button></form>
+    <div class="import-content">
+      <label for="workbook-file">Excel workbook (.xlsx)</label><input id="workbook-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+      <button id="preview-import" class="primary" type="button">Preview workbook</button>
+      <p id="import-error" class="inline-error" hidden></p>
+      <div id="import-preview" hidden></div>
+      <div id="import-unmatched" hidden></div>
+      <div class="import-footer"><span id="import-note">Import creates a local backup and adds records transactionally.</span><button id="commit-import" class="primary" type="button" disabled>Import reviewed data</button></div>
+    </div>
+  </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
