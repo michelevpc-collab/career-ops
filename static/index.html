@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Company Research Queue · career-ops</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">CAREER-OPS · FIRST WORKING FEATURE</p>
+      <h1>Company research queue</h1>
+      <p class="subhead">Browse the master list, select a company, and record source-backed research.</p>
+    </div>
+    <span class="local-badge">Local database</span>
+  </header>
+
+  <main class="layout">
+    <section class="company-pane" aria-label="Company browser">
+      <label class="search-label" for="search">Search companies</label>
+      <input id="search" type="search" placeholder="Name, sector, city, or country" autocomplete="off">
+      <div class="list-meta"><span id="result-count">Loading companies…</span><span>Imported company master</span></div>
+      <ul id="company-list" class="company-list" aria-live="polite"></ul>
+      <button id="load-more" class="secondary full-width" hidden>Load more</button>
+    </section>
+
+    <section id="detail-pane" class="detail-pane" aria-live="polite">
+      <div class="empty-state">
+        <div class="empty-icon">⌕</div>
+        <h2>Select a company</h2>
+        <p>Company fields and missing research information will appear here.</p>
+      </div>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
